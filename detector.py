@@ -63,6 +63,7 @@ class Detector(qtc.QObject):
     def _adjust_detections(self, detections :list, img_width, img_height):
         detections_adjusted = []
         for label, confidence, bbox in detections:
+            print(bbox)
             bbox_adjusted = self._adjust_bbox(bbox, img_width, img_height)
             conf = float(min(float(confidence), 99.))
             detections_adjusted.append((str(label), conf, bbox_adjusted))
@@ -84,7 +85,7 @@ class Detector(qtc.QObject):
             right :int = x + w2
             top :int = y - h2
             bottom :int = y + h2
-            cv2.rectangle(img, (left, top), (right, bottom), color, 3)
+            cv2.rectangle(img, (left, top), (right, bottom), color, 2)
             cv2.putText(img, "{}".format(label), (left, top - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             

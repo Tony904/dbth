@@ -29,7 +29,8 @@ class Scanner(qtc.QObject):
         #  Detector
         cfg = 'D:/yolo_v4/darknet/build/darknet/x64/cfg/yolov7-tiny-dbth.cfg'
         data = 'D:/yolo_v4/darknet/build/darknet/x64/data/dbth.data'
-        weights = 'D:/yolo_v4/darknet/build/darknet/x64/data/yolov7-tiny-dbth_10000.weights'
+        # weights = 'D:/yolo_v4/darknet/build/darknet/x64/data/yolov7-tiny-dbth_10000.weights'
+        weights = 'D:/yolo_v4/darknet/build/darknet/x64/data/yolov7-tiny-dbth-11-13-24_10000.weights'
         self.detector = Detector(cfg, data, weights)
         self.detector.xlog = self.xlog
         # AI
@@ -45,7 +46,8 @@ class Scanner(qtc.QObject):
         }
 
     def test_cap(self):
-        img = cv2.imread('D:\\TonyDev\\dbth\\ana_233_12.PNG')
+        # img = cv2.imread('D:\\TonyDev\\dbth\\img.png')
+        img = cv2.imread('D:\\TonyDev\\dbth\\ana_233_13.png')
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     def main_loop(self):

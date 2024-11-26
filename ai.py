@@ -22,9 +22,25 @@ class DBTHai(qtc.QObject):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.include_refcol = True
         self.allimg = np.zeros((DIM, DIM, 3), dtype=np.uint8)
         self.enabled = True
-        self.sysmsg = 'You will be given an image of a single column with 24 evenly spaced rows. Read each row in the column from top to bottom. Any given row may or may not contain data. In your response, format empty rows as if they had an entry of the underscore symbol (_). Respond only with a list of length 24 corresponding to the 24 rows with each row delimited by the newline character. You MUST only respond with a list of length 24. Do not respond with a list that has more or less than 24 entries.'
+        if not self.include_refcol:
+            self.sysmsg = 'You will be given an image of a single column with 24 evenly spaced rows. Read each row in the column from top to bottom. Any given row may or may not contain data. In your response, format empty rows as if they had an entry of the underscore symbol (_). Respond only with a list of length 24 corresponding to the 24 rows with each row delimited by the newline character. You MUST only respond with a list of length 24. Do not respond with a list that has more or less than 24 entries.'
+        else:
+            self.sysmsg = 'Do not prepend your response with a sentence stating what the image shows.'
+            'You will be given an image of a two columns with 24 evenly spaced rows. '
+            'Read each row in the first column from top to bottom. '
+            'The second column to the right is simply the index of each row from 1 to 24, top to bottom. '
+            'Do not output data in the second column to the right, it is only a reference. '
+            'Any given row may or may not contain data. '
+            'In your response, format empty rows as if they had an entry of the underscore symbol (_). '
+            'Respond only with a list of length 24 corresponding to the 24 rows of the first column on the left '
+            'with each row delimited by the newline character. '
+            'You MUST only respond with a list of length 24. '
+            'Do not prepend your message with what your message will be about. '
+            'Do not respond with a list that has more or less than 24 entries.'
+
 
     def send_api_messages(self, colimgs :tuple):
         colimgs = self.prepare_imgs(colimgs)
@@ -64,8 +80,7 @@ class DBTHai(qtc.QObject):
         response = openai.chat.completions.create(
             model=model_id,
             messages=messages,
-            temperature=0,
-            frequency_penalty=0.1)
+            temperature=0)
         response = response.choices[0].message.content
         print(response)
         return response
@@ -242,7 +257,17 @@ class DBTHai(qtc.QObject):
             height, width, _ = img.shape
             scale = DIM / height
             img = cv2.resize(img, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            h, w, _ = img.shape
             img, _, _ = self.pad_image_to_square(img)
+            if self.include_refcol:
+                numimg = cv2.imread('D:\\TonyDev\\dbth\\numcol.png')
+                scale = DIM / numimg.shape[0]
+                numimg = cv2.resize(numimg, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                print(img.shape, numimg.shape)
+                img[0:DIM,w:w+numimg.shape[1]] = numimg.copy()
+            # cv2.imshow('img', img)
+            # cv2.waitKey(0)
+
             prepimgs.append(img)
         return prepimgs
     
