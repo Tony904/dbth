@@ -6,26 +6,38 @@ from PyQt5 import QtCore as qtc
 from PyQt5 import QtGui as qtg
 from PyQt5 import QtWidgets as qtw
 import os
+from parsr import Parsr
 
 
 class Detector(qtc.QObject):
-    sgl_prop_updated = qtc.pyqtSignal(tuple)
+    sgl_setting_changed = qtc.pyqtSignal(tuple)
 
-    def __init__(self, cfg_path: str = '', data_path: str = '', weights_path: str = '', *args, **kwargs):
+    def __init__(self, name :str, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.logging_enabled = True
-        self.xlog_level = logging.getLogger().getEffectiveLevel()
-        self.xlog_quiet = True
-
+        self.name = name
         self.network = None
         self.net_w = None
         self.net_h = None
-        self._thresh: float = 0.5
-        self.cfg_path = cfg_path
-        self.data_path = data_path
-        self.weights_path = weights_path
-        self.crop_to_square = False
+        self.cfg_path = ''
+        self.data_path = ''
+        self.weights_path = ''
         self._enabled = False
+        # Settings
+        self.st = {
+            'thresh': 0.5
+        }
+        self.load_settings()
+
+    def load_settings(self, path=None):
+        if path is None:
+            path = os.getcwd() + f'/settings_{self.name}.txt'
+        p = Parsr(path)
+        if p is None:
+            return
+        self.st['thresh'] = p.get('thresh', 'float', default=0.5)
+        self.cfg_path = p.get('cfg_path', 'str', required=True)
+        self.data_path = p.get('data_path', 'str', required=True)
+        self.weights_path = p.get('weights_path', 'str', required=True)
 
     def load_network(self):
         self.xlog('Loading network...', logging.INFO)
@@ -38,32 +50,23 @@ class Detector(qtc.QObject):
             err += f'No weights file exists with path: {self.weights_path}'
         if err is not '':
             self.xlog(err, logging.ERROR)
-            raise FileNotFoundError
+            raise FileNotFoundError(err)
         self.network, self.class_names, _ = darknet.load_network(self.cfg_path, self.data_path, self.weights_path, 1)
         self.net_w = darknet.network_width(self.network)
         self.net_h = darknet.network_height(self.network)
         self.xlog('Network loaded.', logging.INFO)
 
     def detect(self, img: np.ndarray):
-        img = self._preprocess_image(img)
+        _img = cv2.resize(img, (self.net_w, self.net_h), interpolation=cv2.INTER_LINEAR)
         darknet_image = darknet.make_image(self.net_w, self.net_h, 3)
-        darknet.copy_image_from_bytes(darknet_image, img.tobytes())
-        detections = darknet.detect_image(self.network, self.class_names, darknet_image, self._thresh)
+        darknet.copy_image_from_bytes(darknet_image, _img.tobytes())
+        detections = darknet.detect_image(self.network, self.class_names, darknet_image, self.st['thresh'])
         darknet.free_image(darknet_image)
-        return img, self._adjust_detections(detections,img.shape[1], img.shape[0])
-
-    def _preprocess_image(self, img: np.ndarray):
-        h, w, _ = img.shape
-        if self.crop_to_square and h != w:
-            x1 = int(w / 2.0 - h / 2.0)
-            x2 = x1 + h
-            img = img[0:h, x1:x2].copy()
-        return cv2.resize(img, (self.net_w, self.net_h), interpolation=cv2.INTER_LINEAR)
+        return img, self._adjust_detections(detections, img.shape[1], img.shape[0])
 
     def _adjust_detections(self, detections :list, img_width, img_height):
         detections_adjusted = []
         for label, confidence, bbox in detections:
-            print(bbox)
             bbox_adjusted = self._adjust_bbox(bbox, img_width, img_height)
             conf = float(min(float(confidence), 99.))
             detections_adjusted.append((str(label), conf, bbox_adjusted))
@@ -71,13 +74,18 @@ class Detector(qtc.QObject):
 
     def _adjust_bbox(self, bbox, img_width, img_height):
         x, y, w, h = bbox
+        x = x / self.net_w
+        y = y / self.net_h
+        w = w / self.net_w
+        h = h / self.net_h
         return int(x * img_width), int(y * img_height), int(w * img_width), int(h * img_height)
     
     @staticmethod
-    def draw_detections(img, detections):
+    def draw_detections(img, detections, omit=[]):
         color = (0, 0, 255)  # red
         for label, confidence, bbox in detections:
-            print(str(label) + ": " + str(confidence) + ": " + str(bbox))
+            if label in omit:
+                continue
             x, y, w, h = bbox
             w2 = int(w / 2)
             h2 = int(h / 2)
@@ -85,29 +93,18 @@ class Detector(qtc.QObject):
             right :int = x + w2
             top :int = y - h2
             bottom :int = y + h2
-            cv2.rectangle(img, (left, top), (right, bottom), color, 2)
-            cv2.putText(img, "{}".format(label), (left, top - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-            
-    def update_prop(self, kv :tuple):
-        k, v = kv
-        if k == 'thresh':
-            self.thresh = v
-            v = self.thresh
-        elif k == 'crop_to_square':
-            self.crop_to_square = v
-            v = self.crop_to_square
-        self.sgl_prop_updated.emit((k, v))
+            cv2.rectangle(img, (left, top), (right, bottom), color, 3)
+            cv2.putText(img, "{} [{:.0f}]".format(label, float(confidence)), (left, top - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-    @property
-    def thresh(self):
-        return self._thresh
-    
-    @thresh.setter
-    def thresh(self, i :int):
-        if i < 0: i = 0
-        elif i > 100: i = 100
-        self._thresh = i
+    @qtc.pyqtSlot(tuple)
+    def change_setting(self, kv :tuple):
+        k, v = kv
+        if k in self.st.keys():
+            self.st[k] = v
+        else:
+            raise KeyError(f'[{self.name}] Invalid key: {k}')
+        self.sgl_setting_changed.emit((k, v))
 
     @property
     def enabled(self):
