@@ -7,6 +7,7 @@ from PyQt5 import QtWidgets as qtw
 import cv2
 import numpy as np
 import glob
+import shutil
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -29,6 +30,8 @@ class MainApp(qtw.QApplication):
         super().__init__(argv)
         self.mw = MainWindow()
         screen_center = qtw.QDesktopWidget().availableGeometry().center()
+        y = screen_center.y()
+        screen_center.setY(y - 20)
         frame = self.mw.frameGeometry()
         frame.moveCenter(screen_center)
         self.mw.move(frame.topLeft())
@@ -57,10 +60,10 @@ class MainWindow(qtw.QWidget):
         self._stop_loop = False
         self.run_once = False
         self.connect_signals()
+        self.load_machines_list()
+        self.get_next_file_and_update_lists()
 
     def connect_signals(self):
-        #  Scanner
-        self.scanner.sgl_msg.connect(self.xlog, type=qtc.Qt.QueuedConnection)
         #  Loop
         self.ui.btn_run_cont.clicked.connect(self.start_loop, type=qtc.Qt.QueuedConnection)
         self.ui.btn_run_once.clicked.connect(self.do_loop_cycle_once, type=qtc.Qt.QueuedConnection)
@@ -75,6 +78,10 @@ class MainWindow(qtw.QWidget):
         self.scanner.ai.sgl_read_delta.connect(self.on_read_delta, type=qtc.Qt.QueuedConnection)
         self.scanner.ai.sgl_read_lost.connect(self.on_read_lost, type=qtc.Qt.QueuedConnection)
         self.scanner.ai.sgl_read_notes.connect(self.on_read_notes, type=qtc.Qt.QueuedConnection)
+        #  Other
+        self.scanner.sgl_msg.connect(self.xlog, type=qtc.Qt.QueuedConnection)
+        self.ui.btn_refresh.clicked.connect(self.get_next_file_and_update_lists, type=qtc.Qt.QueuedConnection)
+        self.ui.btn_move_out_to_in.clicked.connect(self.move_all_out_files_to_in, type=qtc.Qt.QueuedConnection)
 
     def load_machines_list(self):
         path = os.getcwd() + '/machines.txt'
@@ -84,6 +91,8 @@ class MainWindow(qtw.QWidget):
         with open(path, 'r') as file:
             lines = file.readlines()
         lines = Parsr.clean_lines(lines)
+        self.ui.cbox_machine.clear()
+        self.ui.cbox_machine.addItem('')
         for line in lines:
             self.ui.cbox_machine.addItem(line)
         self.machines = lines
@@ -112,7 +121,7 @@ class MainWindow(qtw.QWidget):
         self.xlog('Running once...', logging.INFO)
         self.do_loop_cycle()
 
-    def do_loop_cycle(self):
+    def get_next_file_and_update_lists(self):
         # output files
         ext = '.png'
         dir = os.getcwd() + '/sheets/out/'
@@ -128,19 +137,40 @@ class MainWindow(qtw.QWidget):
         self.ui.lstw_in.addItems(files)
         if len(files) == 0:
             self.xlog(f'No {ext} files found in {dir}', logging.INFO)
+            return None
+        return files[0]
+    
+    @qtc.pyqtSlot()
+    def move_all_out_files_to_in(self):
+        ext = '.png'
+        out_dir = os.getcwd() + '/sheets/out/'
+        in_dir = os.getcwd() + '/sheets/in/'
+        path = out_dir + '*' + ext
+        files = glob.glob(path)
+        for f in files:
+            shutil.move(f, in_dir)
+        self.get_next_file_and_update_lists()
+
+    def do_loop_cycle(self):
+        filename = self.get_next_file_and_update_lists()
+        if filename is None:
             self.scanner.loop_active = False
             return
-        filename = files[0]
         try:
-            img = cv2.imread(files[0])
+            img = cv2.imread(filename)
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         except Exception as ex:
             self.xlog(f'Error occured while loading {filename}\n{ex}', logging.INFO)
             return
+        self.ui.lstw_target.clear()
+        self.ui.lstw_actual.clear()
+        self.ui.lstw_delta.clear()
+        self.ui.lstw_lost.clear()
+        self.ui.lstw_notes.clear()
         machine = self.ui.cbox_machine.currentText()
         if machine == '':
             self.xlog('Warning: No machine selected. No data will be written to excel.', logging.INFO)
-        self.xlog(f'Proccessing {filename}', logging.INFO)
+        self.xlog(f'Processing {filename}', logging.INFO)
         self.sgl_do_loop_cycle.emit((machine, img, filename))
 
     @qtc.pyqtSlot()
@@ -194,6 +224,7 @@ class MainWindow(qtw.QWidget):
         if self.run_once:
             self.scanner.loop_active = False
             self.run_once = False
+            self.get_next_file_and_update_lists()
             return
         if not self._stop_loop:
             self.do_loop_cycle()
@@ -205,31 +236,31 @@ class MainWindow(qtw.QWidget):
     def on_read_target(self, lst :list):
         self.ui.lstw_target.clear()
         self.ui.lstw_target.addItems(lst)
-        self.xlog('Target column complete.', logging.INFO)
+        self.xlog('Target column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_actual(self, lst :list):
         self.ui.lstw_actual.clear()
         self.ui.lstw_actual.addItems(lst)
-        self.xlog('Actual column complete.', logging.INFO)
+        self.xlog('Actual column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_delta(self, lst :list):
         self.ui.lstw_delta.clear()
         self.ui.lstw_delta.addItems(lst)
-        self.xlog('Delta column complete.', logging.INFO)
+        self.xlog('Delta column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_lost(self, lst :list):
         self.ui.lstw_lost.clear()
         self.ui.lstw_lost.addItems(lst)
-        self.xlog('Lost Time column complete.', logging.INFO)
+        self.xlog('Lost Time column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_notes(self, lst :list):
         self.ui.lstw_notes.clear()
         self.ui.lstw_notes.addItems(lst)
-        self.xlog('Notes column complete.', logging.INFO)
+        self.xlog('Notes column updated.', logging.INFO)
 
     # --------------------------------------------------------------
     # Logging & Console

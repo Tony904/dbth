@@ -3,6 +3,7 @@ import shutil
 from PyQt5 import QtCore as qtc
 from PyQt5 import QtGui as qtg
 from PyQt5 import QtWidgets as qtw
+import cv2
 import numpy as np
 import logging
 from detector import Detector
@@ -63,12 +64,14 @@ class Scanner(qtc.QObject):
                 hoursbbox = bbox
             elif lbl == self.lbls['hour_times']:
                 timesbbox = bbox
-        _, b, _, _ = self.xywh2tblr(hoursbbox)
+            elif lbl == self.lbls['notes_header']:
+                notesbbox = bbox
+        _, y0, _, h = timesbbox
         t, _, _, _ = self.xywh2tblr(timesbbox)
-        _, y, _, h = timesbbox
-        #y += b - t
         dets = []
         for lbl, conf, bbox in detections:
+            _, b, _, _ = self.xywh2tblr(bbox)
+            y = y0 + (b - t) // 2
             databox = (bbox[0], y, bbox[2], h)
             if lbl == self.lbls['target_header']:
                 dets.append((lbl, conf, databox))
@@ -85,7 +88,30 @@ class Scanner(qtc.QObject):
             elif lbl == self.lbls['notes_header']:
                 dets.append((lbl, conf, databox))
                 notesimg = self.crop_bbox(img, databox)
-        return img, (targetimg, actualimg, deltaimg, lostimg, notesimg), dets
+        return img, ((targetimg, 'target'), (actualimg, 'actual'), (deltaimg, 'delta'), (lostimg, 'lost'), (notesimg, 'notes')), dets
+    
+    @staticmethod
+    def rotate_image(image, angle, point=None):
+        h, w = image.shape[:2]
+        if point is None:
+            point = (w // 2, h // 2)
+        mat = cv2.getRotationMatrix2D(point, angle, 1.0)
+        return cv2.warpAffine(image, mat, (w, h))
+    
+    @staticmethod
+    def angle_between_points(p1, p2):
+        """
+        Calculates the angle between two points and the horizontal axis.
+
+        :param p1: Tuple (x1, y1) - First point.
+        :param p2: Tuple (x2, y2) - Second point.
+        :return: Angle in degrees.
+        """
+        delta_y = p2[1] - p1[1]
+        delta_x = p2[0] - p1[0]
+        angle_rad = np.arctan2(delta_y, delta_x)  # arctan2 handles quadrants correctly
+        angle_deg = np.degrees(angle_rad)  # Convert to degrees
+        return angle_deg
     
     def verify_detections(self, detections):
         dets = [None] * 7  # target, actual, delta, lost, notes
