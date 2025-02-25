@@ -13,21 +13,24 @@ import os
 import platform
 import logging
 from apikey import mykey
-import time
+from datetime import datetime
 
 openai.api_key = mykey
 DIM = 768 * 2
 
 class DBTHai(qtc.QObject):
     sgl_msg = qtc.pyqtSignal(str)
+    sgl_reading_col = qtc.pyqtSignal(str)
     sgl_read_target = qtc.pyqtSignal(list)
     sgl_read_actual = qtc.pyqtSignal(list)
     sgl_read_delta = qtc.pyqtSignal(list)
     sgl_read_lost = qtc.pyqtSignal(list)
     sgl_read_notes = qtc.pyqtSignal(list)
+    sgl_saved_to_excel = qtc.pyqtSignal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.excel_path = ''
         self.include_refimg = True
         self.refimg_path = 'C:/Users/jabil/Desktop/dbth/colimgs/_numcol2.png'
         self.pad_left_or_right = 'left'
@@ -44,31 +47,31 @@ class DBTHai(qtc.QObject):
     def send_api_messages(self, colimgs :tuple, machine :str):
         colimgs = self.prepare_imgs(colimgs)
         entarget, enactual, endelta, enlost, ennotes = self.encode_colimgs(colimgs)
-        if self.abort: return
-        target_entries = self.send_col_message(entarget, self.target_prompt)
+        if self.abort: return 1
+        self.sgl_reading_col.emit('target')
+        target_entries = self.fix_extra_entries(self.send_col_message(entarget, self.target_prompt))
         self.sgl_read_target.emit(target_entries)
-        if self.abort: return
-        actual_entries = self.send_col_message(enactual, self.actual_prompt)
+        if self.abort: return 1
+        self.sgl_reading_col.emit('actual')
+        actual_entries = self.fix_extra_entries(self.send_col_message(enactual, self.actual_prompt))
         self.sgl_read_actual.emit(actual_entries)
-        if self.abort: return
-        delta_entries = self.send_col_message(endelta, self.delta_prompt)
+        if self.abort: return 1
+        self.sgl_reading_col.emit('delta')
+        delta_entries = self.fix_extra_entries(self.send_col_message(endelta, self.delta_prompt))
         self.sgl_read_delta.emit(delta_entries)
-        if self.abort: return
-        lost_entries = self.send_col_message(enlost, self.lost_prompt)
+        if self.abort: return 1
+        self.sgl_reading_col.emit('lost')
+        lost_entries = self.fix_extra_entries(self.send_col_message(enlost, self.lost_prompt))
         self.sgl_read_lost.emit(lost_entries)
-        if self.abort: return
-        notes_entries = self.send_col_message(ennotes, self.notes_prompt)
-        self.sgl_read_notes.emit(notes_entries)
-        if self.abort: return
-        target_entries, actual_entries, delta_entries, lost_entries, notes_entries = self.fix_extra_entries(target_entries, actual_entries, delta_entries, lost_entries, notes_entries)
-        notes_entries = self.fix_notes(notes_entries)
-        self.sgl_read_target.emit(target_entries)
-        self.sgl_read_actual.emit(actual_entries)
-        self.sgl_read_delta.emit(delta_entries)
-        self.sgl_read_lost.emit(lost_entries)
-        self.sgl_read_notes.emit(notes_entries)
-        if machine == '': return
+        if self.abort: return 1
+        self.sgl_reading_col.emit('notes')
+        notes_entries = self.fix_extra_entries(self.send_col_message(ennotes, self.notes_prompt))
+        self.sgl_read_notes.emit(self.fix_notes(notes_entries))
+        if self.abort: return 1
+        if machine == '': return 0
         self.export_to_excel(target_entries, actual_entries, delta_entries, lost_entries, notes_entries, machine)
+        self.xlog(f'Saved to {self.excel_path}', logging.INFO)
+        return 0
 
     def fix_notes(self, notes):
         if len(notes) < 3: return
@@ -81,31 +84,25 @@ class DBTHai(qtc.QObject):
                     notes[-2] = 'x'
         return notes
 
-    def fix_extra_entries(self, target, actual, delta, lost, notes):
-        data = [target, actual, delta, lost, notes]
-        fixed = [] * len(data)
-        for d in data:
-            if len(d) <= self.col_size:
-                fixed.append(list(d))
-                continue
-            f = list(d)
-            offset = 0
-            i = self.col_size - 1
-            while i < len(d):
-                s = d[i]
-                if s == 'x': offset += 1
-                else: 
-                    f[i] = f[i - offset]
-                    f[i - offset] = s
-                i += 1
-            i = len(f) - 1
-            offset = 0
-            while i - offset + 1 > self.col_size:
-                if f[i - offset] == 'x': offset += 1
-                else: break
-            f = list(f[:i - offset + 1])
-            fixed.append(f)
-        return tuple(fixed)
+    def fix_extra_entries(self, ent):
+        if len(ent) <= self.col_size:
+            return ent
+        f = list(ent)
+        offset = 0
+        i = self.col_size - 1
+        while i < len(ent):
+            s = ent[i]
+            if s == 'x': offset += 1
+            else: 
+                f[i] = f[i - offset]
+                f[i - offset] = s
+            i += 1
+        i = len(f) - 1
+        offset = 0
+        while i - offset + 1 > self.col_size:
+            if f[i - offset] == 'x': offset += 1
+            else: break
+        return list(f[:i - offset + 1])
     
     def export_to_excel(self, target :list, actual :list, delta :list, lost :list, notes :list, sheet_name :str):
         hours = ['11pm', '12am', '1am', '2am', '3am', '4am', '5am', '6am', '7am', '8am', '9am', '10am', '11am', '12pm', '1pm', '2pm', '3pm', '4pm', '5pm', '6pm', '7pm', '8pm', '9pm', '10pm']
@@ -124,9 +121,9 @@ class DBTHai(qtc.QObject):
             if len(data[k]) < max_length:
                 lst = [''] * (max_length - len(data[k]))
                 data[k].extend(lst)
-        excel_path = "C:\\Users\\jabil\\Desktop\\DBTH_AutoDrills_Copy.xlsx"
-        if os.path.exists(excel_path):
-            wb = load_workbook(excel_path)
+        path = self.excel_path
+        if os.path.exists(path):
+            wb = load_workbook(path)
         else:
             wb = Workbook()
 
@@ -141,27 +138,33 @@ class DBTHai(qtc.QObject):
             key = headers[j]
             vals = data[key]
             for i in range(0, max_length):
-                ws.cell(row=i+2, column=j+1, value=vals[i])
-
+                if key == 'Target' or key == 'Actual' or key == 'Delta':
+                    try:
+                        ws.cell(row=i+2, column=j+1, value=int(vals[i]))
+                    except ValueError:
+                        ws.cell(row=i+2, column=j+1, value=vals[i])
+                else:
+                    ws.cell(row=i+2, column=j+1, value=vals[i])
+        ws.cell(row=1, column=7, value=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         try:
-            wb.save(excel_path)
+            wb.save(path)
         except PermissionError as e:
-            msg = f'{e}\nIf excel file is open please close and run again.'
+            msg = f'{e}\n*** If excel file is open please close and run again. ***'
             self.xlog(msg, logging.ERROR)
             print(msg)
             exit(1)
         # Open excel file
-        if platform.system() == 'Windows':
-            os.startfile(excel_path)
-        else:
-            os.system(f'xdg-open "{excel_path}"')
+        # if platform.system() == 'Windows':
+        #     os.startfile(path)
+        # else:
+        #     os.system(f'xdg-open "{path}"')
 
     def send_col_message(self, enimg, prompt):
         messages = [
             {'role': 'system',
             'content': prompt},
             {'role': 'user',
-            'content': [
+            'content':  [
                 {'type': 'image_url',
                 'image_url':  {
                     'url': f'data:image/png;base64,{enimg}',

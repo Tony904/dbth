@@ -40,6 +40,7 @@ class MainApp(qtw.QApplication):
 class MainWindow(qtw.QWidget):
     sgl_main_loop_activated = qtc.pyqtSignal()
     sgl_do_loop_cycle = qtc.pyqtSignal(tuple)
+    sgl_load_network = qtc.pyqtSignal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -62,17 +63,21 @@ class MainWindow(qtw.QWidget):
         self.connect_signals()
         self.load_machines_list()
         self.get_next_file_and_update_lists()
+        self.sgl_load_network.emit()
 
     def connect_signals(self):
         #  Loop
         self.ui.btn_run_cont.clicked.connect(self.start_loop, type=qtc.Qt.QueuedConnection)
         self.ui.btn_run_once.clicked.connect(self.do_loop_cycle_once, type=qtc.Qt.QueuedConnection)
         self.ui.btn_stop.clicked.connect(self.stop_loop, type=qtc.Qt.QueuedConnection)
+        self.ui.btn_abort.clicked.connect(self.abort_loop, type=qtc.Qt.QueuedConnection)
         self.scanner.sgl_loop_cycle_complete.connect(self.on_loop_cycle_complete, type=qtc.Qt.QueuedConnection)
         self.sgl_do_loop_cycle.connect(self.scanner.main_loop, type=qtc.Qt.QueuedConnection)
+        self.scanner.sgl_aborted.connect(self.on_aborted, type=qtc.Qt.QueuedConnection)
         #  Displays
         self.scanner.sgl_update_display.connect(self.update_display, type=qtc.Qt.QueuedConnection)
         #  AI
+        self.scanner.ai.sgl_reading_col.connect(self.on_reading_col, type=qtc.Qt.QueuedConnection)
         self.scanner.ai.sgl_read_target.connect(self.on_read_target, type=qtc.Qt.QueuedConnection)
         self.scanner.ai.sgl_read_actual.connect(self.on_read_actual, type=qtc.Qt.QueuedConnection)
         self.scanner.ai.sgl_read_delta.connect(self.on_read_delta, type=qtc.Qt.QueuedConnection)
@@ -82,6 +87,8 @@ class MainWindow(qtw.QWidget):
         self.scanner.sgl_msg.connect(self.xlog, type=qtc.Qt.QueuedConnection)
         self.ui.btn_refresh.clicked.connect(self.get_next_file_and_update_lists, type=qtc.Qt.QueuedConnection)
         self.ui.btn_move_out_to_in.clicked.connect(self.move_all_out_files_to_in, type=qtc.Qt.QueuedConnection)
+        self.ui.btn_excel_file.clicked.connect(self.browse_excel_file, type=qtc.Qt.QueuedConnection)
+        self.sgl_load_network.connect(self.scanner.load_network, type=qtc.Qt.QueuedConnection)
 
     def load_machines_list(self):
         path = os.getcwd() + '/machines.txt'
@@ -98,26 +105,46 @@ class MainWindow(qtw.QWidget):
         self.machines = lines
     
     @qtc.pyqtSlot()
+    def browse_excel_file(self):
+        path, _ = qtw.QFileDialog.getOpenFileName(self, 
+                    caption="Select Excel file",
+                    directory=os.getcwd()+'/',
+                    filter="Excel Files (*.xlsx)")
+        if path:
+            if os.path.exists(path):
+                self.ui.ledit_excel_path.setText(path)
+                self.scanner.ai.excel_path = path
+            else:
+                self.xlog(f'File not found: {path}')
+
+    @qtc.pyqtSlot()
     def start_loop(self):
+        if not self.scanner.detector.enabled:
+            self.xlog('Network must be loaded before running.', logging.INFO)
+            return
         if self.scanner.loop_active:
             self.xlog(f'Already running.', logging.INFO)
             return
         self._stop_loop = False
         self.scanner.loop_active = True
+        self.ui.btn_stop.setEnabled(True)
+        self.ui.btn_abort.setEnabled(True)
         self.scanner.ai.abort = False
-        self.scanner.detector.enabled = True
         self.do_loop_cycle()
 
     @qtc.pyqtSlot()
     def do_loop_cycle_once(self):
+        if not self.scanner.detector.enabled:
+            self.xlog('Network must be loaded before running.', logging.INFO)
+            return
         if self.scanner.loop_active:
             self.xlog(f'Already running.', logging.INFO)
             return
         self.run_once = True
         self._stop_loop = False
         self.scanner.loop_active = True
+        self.ui.btn_abort.setEnabled(True)
         self.scanner.ai.abort = False
-        self.scanner.detector.enabled = True
         self.xlog('Running once...', logging.INFO)
         self.do_loop_cycle()
 
@@ -151,10 +178,20 @@ class MainWindow(qtw.QWidget):
             shutil.move(f, in_dir)
         self.get_next_file_and_update_lists()
 
+    def zero_progress_bars(self):
+        self.ui.pbar_target.setValue(0)
+        self.ui.pbar_actual.setValue(0)
+        self.ui.pbar_delta.setValue(0)
+        self.ui.pbar_lost.setValue(0)
+        self.ui.pbar_notes.setValue(0)
+
     def do_loop_cycle(self):
+        self.zero_progress_bars()
         filename = self.get_next_file_and_update_lists()
         if filename is None:
             self.scanner.loop_active = False
+            self.ui.btn_stop.setEnabled(False)
+            self.ui.btn_abort.setEnabled(False)
             return
         try:
             img = cv2.imread(filename)
@@ -178,8 +215,11 @@ class MainWindow(qtw.QWidget):
         if not self.scanner.loop_active:
             self.xlog('Not running.', logging.INFO)
             return
+        elif self._stop_loop:
+            self.xlog('Already stopping...', logging.INFO)
+            return
         self._stop_loop = True
-        self.xlog('Stopping...', logging.INFO)
+        self.xlog('Will stop after current cycle...', logging.INFO)
 
     @qtc.pyqtSlot()
     def abort_loop(self):
@@ -223,6 +263,7 @@ class MainWindow(qtw.QWidget):
     def on_loop_cycle_complete(self):
         if self.run_once:
             self.scanner.loop_active = False
+            self.ui.btn_abort.setEnabled(False)
             self.run_once = False
             self.get_next_file_and_update_lists()
             return
@@ -230,34 +271,59 @@ class MainWindow(qtw.QWidget):
             self.do_loop_cycle()
         else:
             self.scanner.loop_active = False
-            self.xlog('Stopped.', logging.INFO)
+            self.ui.btn_stop.setEnabled(False)
+            self.ui.btn_abort.setEnabled(False)
+            self.xlog('Stopped successfully.', logging.INFO)
+
+    @qtc.pyqtSlot()
+    def on_aborted(self):
+        self.zero_progress_bars()
+        self.xlog('Aborted successfully.', logging.INFO)
+
+    @qtc.pyqtSlot(str)
+    def on_reading_col(self, s :str):
+        if s == 'target':
+            self.ui.pbar_target.setValue(50)
+        elif s == 'actual':
+            self.ui.pbar_actual.setValue(50)
+        elif s == 'delta':
+            self.ui.pbar_delta.setValue(50)
+        elif s == 'lost':
+            self.ui.pbar_lost.setValue(50)
+        elif s == 'notes':
+            self.ui.pbar_notes.setValue(50)
 
     @qtc.pyqtSlot(list)
     def on_read_target(self, lst :list):
+        self.ui.pbar_target.setValue(100)
         self.ui.lstw_target.clear()
         self.ui.lstw_target.addItems(lst)
         self.xlog('Target column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_actual(self, lst :list):
+        self.ui.pbar_actual.setValue(100)
         self.ui.lstw_actual.clear()
         self.ui.lstw_actual.addItems(lst)
         self.xlog('Actual column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_delta(self, lst :list):
+        self.ui.pbar_delta.setValue(100)
         self.ui.lstw_delta.clear()
         self.ui.lstw_delta.addItems(lst)
         self.xlog('Delta column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_lost(self, lst :list):
+        self.ui.pbar_lost.setValue(100)
         self.ui.lstw_lost.clear()
         self.ui.lstw_lost.addItems(lst)
         self.xlog('Lost Time column updated.', logging.INFO)
 
     @qtc.pyqtSlot(list)
     def on_read_notes(self, lst :list):
+        self.ui.pbar_notes.setValue(100)
         self.ui.lstw_notes.clear()
         self.ui.lstw_notes.addItems(lst)
         self.xlog('Notes column updated.', logging.INFO)

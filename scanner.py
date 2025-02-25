@@ -13,6 +13,7 @@ class Scanner(qtc.QObject):
     sgl_msg = qtc.pyqtSignal(str, int)
     sgl_update_display = qtc.pyqtSignal(tuple)
     sgl_loop_cycle_complete = qtc.pyqtSignal()
+    sgl_aborted = qtc.pyqtSignal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -43,8 +44,9 @@ class Scanner(qtc.QObject):
             if self.ai.enabled:
                 if colimgs is not None:
                     self.sgl_update_display.emit((img, detections))
-                    self.ai.send_api_messages(colimgs, machine)
-                    shutil.move(filename, os.getcwd() + '/sheets/out/')
+                    ret = self.ai.send_api_messages(colimgs, machine)
+                    if ret > 0: self.sgl_aborted.emit()
+                    else: shutil.move(filename, os.getcwd() + '/sheets/out/')
         self.sgl_loop_cycle_complete.emit()
 
     def detect_columns(self, img :np.ndarray):
@@ -153,6 +155,10 @@ class Scanner(qtc.QObject):
         left = round(x - w / 2.)
         right = round(x + w / 2.)
         return top, bot, left, right
+    
+    @qtc.pyqtSlot()
+    def load_network(self):
+        self.detector.enabled = True
 
     def xlog(self, msg :str, level :int = logging.DEBUG):
         self.sgl_msg.emit(msg, level)
